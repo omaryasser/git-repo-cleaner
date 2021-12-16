@@ -14,14 +14,21 @@ import (
 )
 
 const (
+	// Used to change the color of the lines writted to the user's console.
+	// Check: https://en.wikipedia.org/wiki/ANSI_escape_code
 	ConsoleRedColorCode   = "\033[31m"
 	ConsoleGreenColorCode = "\033[32m"
 	ConsoleResetColorCode = "\033[0m"
 )
 
 var repoAbsolutePath = flag.String("repo-absolute-path", "", "The absolute path to the repo to be cleaned")
+
+// mainBranchName is the name of branch that contains the final relevant
+// files. After checking out to this branch, any files that are not in
+// the repoAbsolutePath/ will be considered as garbage.
 var mainBranchName = flag.String("main-branch-name", "", "The name of the main branch (e.g. master)")
 
+// checkoutToMainBranch uses: https://git-scm.com/docs/git-checkout
 func checkoutToMainBranch() {
 	cmd := exec.Command("git", "checkout", *mainBranchName)
 	cmd.Dir = *repoAbsolutePath
@@ -31,6 +38,8 @@ func checkoutToMainBranch() {
 	}
 }
 
+// getAllFilesSavedInGit uses https://git-scm.com/docs/git-rev-list to
+// get all of the objects saved in all of the branches.
 func getAllFilesSavedInGit() []string {
 	cmd := exec.Command("git", "rev-list", "--objects", "--all")
 	cmd.Dir = *repoAbsolutePath
@@ -41,6 +50,7 @@ func getAllFilesSavedInGit() []string {
 	files := make([]string, 0)
 	for _, line := range lines {
 		splitted := strings.Split(strings.TrimSpace((line)), " ")
+		// There are some objects that don't correspond to file names.
 		if len(splitted) == 2 {
 			files = append(files, splitted[1])
 		}
@@ -49,6 +59,8 @@ func getAllFilesSavedInGit() []string {
 	return files
 }
 
+// runCmdAndGetOutputLines runs cmd and returns the list of lines
+// written to the standard output.
 func runCmdAndGetOutputLines(cmd *exec.Cmd) ([]string, error) {
 	cmd.Dir = *repoAbsolutePath
 	out, err := cmd.Output()
@@ -58,6 +70,7 @@ func runCmdAndGetOutputLines(cmd *exec.Cmd) ([]string, error) {
 	return strings.Split(string(out), "\n"), nil
 }
 
+// isFileInRepoDir checks if `file` exists in repoAbsolutePath.
 func isFileInRepoDir(file string) bool {
 	if _, err := os.Stat(filepath.Join(*repoAbsolutePath, file)); errors.Is(err, os.ErrNotExist) {
 		return false
@@ -65,13 +78,17 @@ func isFileInRepoDir(file string) bool {
 	return true
 }
 
+// isFileGitIgnored uses https://git-scm.com/docs/git-check-ignore to
+// check if a file is ignored by git or not. Files that are ignored by
+// git but are still saved as part of some commits should have their
+// commits rewritten to get rid of the size of the file.
 func isFileGitIgnored(file string) bool {
 	cmd := exec.Command("git", "check-ignore", file)
 	cmd.Dir = *repoAbsolutePath
 	if err := cmd.Run(); err != nil {
 		if _, ok := err.(*exec.ExitError); ok {
-			// Check git check-ignore --help
-			// An exit code of 1 means that no files are to be ignored given the input pattern
+			// An exit code of 1 means that no files are to be ignored given the
+			// input pattern, check `git check-ignore --help`
 			if err.(*exec.ExitError).ExitCode() == 1 {
 				return false
 			}
@@ -81,6 +98,10 @@ func isFileGitIgnored(file string) bool {
 	return true
 }
 
+// filterFilesToBeRemoved returns the files that are either:
+// - not found in the directory of the repo after checking out to the
+//   main branch or
+// - ignored by git.
 func filterFilesToBeRemoved(files []string) []string {
 	filesToBeRemoved := make([]string, 0)
 	for _, file := range files {
@@ -101,6 +122,8 @@ func printFilesToBeRemoved(files []string) {
 	}
 }
 
+// takeUserConsent exits the process if the user doesn't agree to
+// remove the filtered files.
 func takeUserConsent() {
 	reader := bufio.NewReader(os.Stdin)
 
@@ -114,6 +137,9 @@ func takeUserConsent() {
 	}
 }
 
+// removeFilesFromHistory applies
+// https://github.com/newren/git-filter-repo/blob/main/COPYING
+// on all of the files to be removed.
 func removeFilesFromHistory(files []string) {
 	for _, file := range files {
 
@@ -132,6 +158,8 @@ func removeFilesFromHistory(files []string) {
 	}
 }
 
+// printFiltering keeps informing the user through stdout that it is
+// filtering until it receives a signal on the stop channel.
 func printFiltering(stop <-chan struct{}) {
 	dots := 1
 
@@ -165,14 +193,13 @@ func main() {
 	checkoutToMainBranch()
 
 	files := getAllFilesSavedInGit()
-	filesLenInitially := len(files)
-	fmt.Printf("Git is currently saving objects for %d files.\n", filesLenInitially)
+	initFilesLen := len(files)
+	fmt.Printf("Git is currently saving objects for %d files.\n", initFilesLen)
 
 	filteringDone := make(chan struct{})
 	go func() {
 		printFiltering(filteringDone)
 	}()
-
 	filesToBeRemoved := filterFilesToBeRemoved(files)
 	close(filteringDone)
 
@@ -180,5 +207,5 @@ func main() {
 	takeUserConsent()
 	removeFilesFromHistory(filesToBeRemoved)
 
-	fmt.Printf("Git was saving %d objects and now is saving %d objects.\n", filesLenInitially, len(getAllFilesSavedInGit()))
+	fmt.Printf("Git was saving %d objects and now is saving %d objects.\n", initFilesLen, len(getAllFilesSavedInGit()))
 }
